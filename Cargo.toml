@@ -2,7 +2,7 @@
 name = "twin_plate_vdm"
 version = "0.1.0"
 edition = "2021"
-description = "Twin-plate vector displacement maps: two PNGs encode a solid, any grid rebuilds the mesh."
+description = "Twin-plate vector displacement maps. Two images encode a solid. PNG or OpenEXR."
 license = "MIT"
 
 [lib]
@@ -14,3 +14,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[dependencies]
+miniz_oxide = { version = "0.8", default-features = false }

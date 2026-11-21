@@ -9,12 +9,12 @@
 <body>
   <header class="top">
     <p class="kicker">Twin plate vector displacement</p>
-    <h1>Two PNGs are the model.</h1>
+    <h1>Two images are the model.</h1>
     <p class="lede">
       A solid can be stored as a pair of images. Both plates sit on the same
       center. One faces up, the other faces down, and each pixel is the vector
-      from that center out to the surface. A mesh of any size is a resample of
-      those two files.
+      from that center out to the surface. The files can be 16-bit PNG or
+      OpenEXR. A mesh of any size is a resample of those two files.
     </p>
   </header>
 
@@ -36,6 +36,25 @@
         <p id="blurb" class="blurb"></p>
       </fieldset>
 
+      <fieldset>
+        <legend>File</legend>
+        <div class="shapes" id="formats">
+          <button type="button" data-container="0">16-bit PNG</button>
+          <button type="button" data-container="1">OpenEXR</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Brush, one plate</legend>
+        <div class="shapes" id="brushes"></div>
+        <p id="brush-blurb" class="note"></p>
+      </fieldset>
+
+      <label class="drop" id="drop">
+        <input id="file" type="file" accept=".exr,.png,image/png" multiple>
+        <span>Drop one EXR as a brush, or a plus and a minus plate. Each file has to stay under 1.2 MB.</span>
+      </label>
+
       <label class="slider">
         <span>Lean <b id="lean-val">0.35</b></span>
         <input id="lean" type="range" min="0" max="1.2" step="0.01" value="0.35">
@@ -43,7 +62,7 @@
       <p id="lean-note" class="note"></p>
 
       <label class="slider">
-        <span>PNG resolution <b id="bake-val">128²</b></span>
+        <span>Plate resolution <b id="bake-val">128²</b></span>
         <input id="bake" type="range" min="0" max="7" step="1" value="5">
       </label>
 
@@ -83,27 +102,27 @@
     </article>
     <article>
       <h2>3 · Two files</h2>
-      <p>Hit minus plate point is the vector. Red, green, and blue store X, Y, and Z in 16-bit PNG. Alpha is zero where the ray misses. That pair is the model.</p>
+      <p>Hit minus plate point is the vector. Red, green, and blue are X, Y, and Z. PNG stores them in 16-bit, with the middle code as zero. OpenEXR stores the same vector as a float, and zero means zero. Alpha is the mask.</p>
     </article>
     <article>
       <h2>4 · Any grid</h2>
-      <p>Reconstruction decodes the PNGs, adds the vectors back onto the plates, and stitches a wall around the silhouette. A coarser grid is a lighter mesh from the same files.</p>
+      <p>Reconstruction decodes the files, adds the vectors back onto the plates, and stitches a wall around the silhouette. A coarser grid is a lighter mesh from the same files.</p>
     </article>
   </section>
 
   <section class="files">
     <figure>
-      <img id="img-plus" alt="Top plate vector image">
+      <canvas id="plate-plus" class="plate" width="128" height="128"></canvas>
       <figcaption>
-        <strong>plate-plus.png</strong>
+        <strong id="name-plus">plate-plus.png</strong>
         <span id="cap-plus"></span>
         <button type="button" id="dl-plus">Download</button>
       </figcaption>
     </figure>
     <figure>
-      <img id="img-minus" alt="Bottom plate vector image">
+      <canvas id="plate-minus" class="plate" width="128" height="128"></canvas>
       <figcaption>
-        <strong>plate-minus.png</strong>
+        <strong id="name-minus">plate-minus.png</strong>
         <span id="cap-minus"></span>
         <button type="button" id="dl-minus">Download</button>
       </figcaption>
@@ -112,14 +131,13 @@
 
   <footer>
     <p class="formula">
-      <code>P(u,v) = O(u,v) + (channel / 65535 − ½) × 5</code>
+      <code>P(u,v) = O(u,v) + vector(R, G, B)</code>
     </p>
     <p>
-      The two PNGs are the geometry source. A build for a console or a phone can
-      resample them at that machine’s vertex budget, then paint albedo and normals
-      in an external tool. Texture size stays independent of this mesh.
-      These files are standard 16-bit RGBA PNGs with stored pixels, so other apps can open them.
-      Drag to orbit, scroll to zoom.
+      PNG packs that vector into 16-bit channels, biased so 32768 is zero.
+      OpenEXR writes the same numbers as floats, and zero is no displacement.
+      A brush is one OpenEXR: the upward plate only. Drop a second file when
+      the solid has a downward plate too. Drag to orbit, scroll to zoom.
     </p>
     <p id="selftest" hidden></p>
     <p id="fatal" class="fatal" hidden></p>

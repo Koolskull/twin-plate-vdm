@@ -55,6 +55,33 @@ if (!(fine > coarse && coarse > 0)) throw new Error(`tris ${coarse} -> ${fine}`)
 if (exp.bake(2, 32, 0) !== 0) throw new Error("torus bake");
 if (header().centerPlusOk !== 0) throw new Error("torus hole missing");
 
+exp.set_container(1);
+if (exp.bake(0, 16, 0.2) !== 0) throw new Error("exr bake failed");
+h = header();
+const exr = png(h.pngPlusPtr, h.pngPlusLen);
+if (exr[0] !== 0x76 || exr[1] !== 0x2f || exr[2] !== 0x31 || exr[3] !== 0x01) {
+  throw new Error("exr magic");
+}
+if (h.centerPlusY <= 0) throw new Error("exr sphere");
+exp.wipe();
+const exrHeader = header();
+new Uint8Array(exp.memory.buffer).set(exr, exrHeader.pngPlusPtr);
+const exrMinus = png(h.pngMinusPtr, h.pngMinusLen);
+new Uint8Array(exp.memory.buffer).set(exrMinus, exrHeader.pngMinusPtr);
+if (exp.load_pngs(exrHeader.pngPlusPtr, exr.length, exrHeader.pngMinusPtr, exrMinus.length) !== 0) {
+  throw new Error("exr load failed");
+}
+if (exp.bake_brush(0, 32) !== 0) throw new Error("horn bake");
+h = header();
+if (h.centerPlusY < 0.8) throw new Error(`horn ${h.centerPlusY}`);
+const horn = png(h.pngPlusPtr, h.pngPlusLen);
+exp.wipe();
+const brushHeader = header();
+new Uint8Array(exp.memory.buffer).set(horn, brushHeader.pngPlusPtr);
+if (exp.load_brush(brushHeader.pngPlusPtr, horn.length) !== 0) throw new Error("load_brush failed");
+if (header().centerPlusY < 0.8) throw new Error("horn reload");
+exp.set_container(0);
+
 writeFileSync("/tmp/twin-plate-plus.png", plus);
 writeFileSync("/tmp/twin-plate-minus.png", minus);
-console.log(`wasm ok  sphere tris ${coarse} -> ${fine}  png ${plus.length}+${minus.length} bytes`);
+console.log(`wasm ok  sphere tris ${coarse} -> ${fine}  png ${plus.length}+${minus.length}  exr ${exr.length}  horn ${horn.length}`);

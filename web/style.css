@@ -71,7 +71,7 @@ h1 {
   overflow: hidden;
 }
 
-canvas {
+#view {
   width: 100%;
   height: 100%;
   display: block;
@@ -79,7 +79,7 @@ canvas {
   cursor: grab;
 }
 
-canvas:active { cursor: grabbing; }
+#view:active { cursor: grabbing; }
 
 .hud {
   position: absolute;
@@ -160,6 +160,36 @@ legend {
   border-color: var(--plus);
 }
 
+.drop {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+}
+
+.drop.hot {
+  border-color: var(--plus);
+  color: var(--text);
+}
+
 .blurb, .note, .vectors, footer p {
   color: var(--dim);
   font-size: 14px;
@@ -231,8 +261,9 @@ figure {
   overflow: hidden;
 }
 
-figure img {
+figure img, canvas.plate {
   width: 100%;
+  height: auto;
   aspect-ratio: 1;
   object-fit: contain;
   background:
@@ -243,6 +274,8 @@ figure img {
   background-size: 18px 18px;
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
   image-rendering: pixelated;
+  cursor: default;
+  touch-action: auto;
 }
 
 figcaption {

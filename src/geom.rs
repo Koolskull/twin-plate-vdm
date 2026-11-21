@@ -1,6 +1,6 @@
-//! Bake two plate images from a math solid, pack them as PNG, and rebuild a mesh
-//! by sampling those images. The mesh path does not call the solid again except
-//! to measure how far the result drifted from the formula.
+//! Bake two plate images from a math solid, pack them as PNG or OpenEXR, and
+//! rebuild a mesh by sampling those images. The mesh path does not call the
+//! solid again except to measure how far the result drifted from the formula.
 
 #[cfg(target_arch = "wasm32")]
 use crate::fmath::FloatMath;
@@ -16,7 +16,9 @@ pub const MAX_RES: u32 = 256;
 
 const MAX: usize = 256;
 const PIXELS: usize = MAX * MAX;
-const PNG_MAX: usize = 540_000;
+/// A 256² float RGBA OpenEXR is a bit over a megabyte. Brushes fit. A full
+/// film plate does not, and the page says so.
+const PNG_MAX: usize = 1_250_000;
 const RAW_MAX: usize = MAX * (1 + MAX * 8);
 const VERT_STRIDE: usize = 6;
 const MAX_VERTS: usize = 2 * MAX * MAX;
@@ -109,6 +111,8 @@ struct State {
     mask: [u8; PIXELS],
     bake_res: u32,
     shape: u32,
+    /// 0 is the 16-bit PNG pair. 1 is float OpenEXR.
+    container: u32,
     ready: u32,
     header: Header,
 }
@@ -131,6 +135,7 @@ static STATE: StateCell = StateCell(core::cell::UnsafeCell::new(State {
     mask: [0; PIXELS],
     bake_res: 0,
     shape: 0,
+    container: 0,
     ready: 0,
     header: Header::zero(),
 }));
@@ -238,6 +243,37 @@ fn fill_ptrs(s: &mut State) {
     s.header.bake_res = s.bake_res;
 }
 
+pub fn set_container(kind: u32) {
+    state().container = if kind == 1 { 1 } else { 0 };
+}
+
+fn encode_plate(s: &mut State, plate: u32, comment: &str) -> Result<u32, ()> {
+    let res = s.bake_res;
+    let used = (res * res * 4) as usize;
+    let container = s.container;
+    // The pixel buffer, the scratch row, and the file buffer are distinct fields.
+    unsafe {
+        let img_ptr = if plate == 0 {
+            s.plus.as_ptr()
+        } else {
+            s.minus.as_ptr()
+        };
+        let img = core::slice::from_raw_parts(img_ptr, used);
+        let raw = core::slice::from_raw_parts_mut(s.raw.as_mut_ptr(), s.raw.len());
+        let out_ptr = if plate == 0 {
+            s.png_plus.as_mut_ptr()
+        } else {
+            s.png_minus.as_mut_ptr()
+        };
+        let out = core::slice::from_raw_parts_mut(out_ptr, PNG_MAX);
+        if container == 1 {
+            crate::exrio::encode_rgba16(img, res, comment, raw, out, RANGE).map(|n| n as u32)
+        } else {
+            encode_rgba16(img, res, comment, raw, out).map(|n| n as u32)
+        }
+    }
+}
+
 fn ray_dir(x: f32, z: f32, y_sign: f32, lean: f32) -> Vec3 {
     // y_sign is the plate normal. Lean splays the ray away from the center.
     Vec3::new(lean * x, y_sign, lean * z).normalized()
@@ -296,30 +332,17 @@ pub fn bake_model(shape: u32, res: u32, lean: f32) -> u32 {
     }
 
     let sum = checksum(&s.plus, res) ^ checksum(&s.minus, res).rotate_left(1);
-    let used = (res * res * 4) as usize;
     let comment_plus = pngio::comment_for(shape, shape::shape_name(shape), res, lean, "plus");
-    let plus_len = match encode_rgba16(
-        &s.plus[..used],
-        res,
-        comment_plus.as_str(),
-        &mut s.raw,
-        &mut s.png_plus,
-    ) {
-        Ok(n) => n as u32,
+    let plus_len = match encode_plate(s, 0, comment_plus.as_str()) {
+        Ok(n) => n,
         Err(()) => {
             s.header.status = 2;
             return 2;
         }
     };
     let comment_minus = pngio::comment_for(shape, shape::shape_name(shape), res, lean, "minus");
-    let minus_len = match encode_rgba16(
-        &s.minus[..used],
-        res,
-        comment_minus.as_str(),
-        &mut s.raw,
-        &mut s.png_minus,
-    ) {
-        Ok(n) => n as u32,
+    let minus_len = match encode_plate(s, 1, comment_minus.as_str()) {
+        Ok(n) => n,
         Err(()) => {
             s.header.status = 2;
             return 2;
@@ -347,19 +370,127 @@ pub fn bake_model(shape: u32, res: u32, lean: f32) -> u32 {
     0
 }
 
+/// A sculpt brush is one image: the upward plate. The downward plate stays empty.
+pub fn bake_brush(id: u32, res: u32) -> u32 {
+    if id >= crate::brush::COUNT || !(8..=MAX_RES).contains(&res) {
+        let s = state();
+        s.ready = 0;
+        s.header.status = 1;
+        return 1;
+    }
+    let s = state();
+    s.ready = 0;
+    s.shape = shape::SHAPE_COUNT;
+    s.bake_res = res;
+    s.header = Header::zero();
+    s.header.shape = shape::SHAPE_COUNT;
+    s.header.bake_res = res;
+    let neutral = enc(0.0);
+    for j in 0..res {
+        for i in 0..res {
+            let u = (i as f32 + 0.5) / res as f32;
+            let v = (j as f32 + 0.5) / res as f32;
+            let x = (u - 0.5) * SPAN;
+            let z = (v - 0.5) * SPAN;
+            let (rgb, alpha) = match crate::brush::eval(id, x, z) {
+                Some(vector) => (quantize(vector, &mut 0.0, &mut 0), 65535),
+                None => ([neutral, neutral, neutral], 0),
+            };
+            write_texel(&mut s.plus, res, i, j, rgb, alpha);
+            write_texel(&mut s.minus, res, i, j, [neutral, neutral, neutral], 0);
+        }
+    }
+    let sum = checksum(&s.plus, res) ^ checksum(&s.minus, res).rotate_left(1);
+    let comment = pngio::comment_for(id, crate::brush::name(id), res, 0.0, "brush");
+    let plus_len = match encode_plate(s, 0, comment.as_str()) {
+        Ok(n) => n,
+        Err(()) => {
+            s.header.status = 2;
+            return 2;
+        }
+    };
+    let comment_m = pngio::comment_for(id, crate::brush::name(id), res, 0.0, "minus");
+    let minus_len = match encode_plate(s, 1, comment_m.as_str()) {
+        Ok(n) => n,
+        Err(()) => {
+            s.header.status = 2;
+            return 2;
+        }
+    };
+    s.png_plus_len = plus_len;
+    s.png_minus_len = minus_len;
+    zero_images(s);
+    if decode_pair(s).is_err() {
+        s.ready = 0;
+        s.header.status = 3;
+        return 3;
+    }
+    let sum_after = checksum(&s.plus, res) ^ checksum(&s.minus, res).rotate_left(1);
+    if sum != sum_after {
+        s.ready = 0;
+        s.header.status = 3;
+        return 3;
+    }
+    s.shape = shape::SHAPE_COUNT;
+    publish_image_stats(s);
+    s.header.quant_error = 0.0;
+    s.header.clamped = 0;
+    s.ready = 1;
+    s.header.status = 0;
+    0
+}
+
+#[allow(dead_code)]
+pub fn plate_address(plate: u32) -> u32 {
+    unsafe {
+        let s = &*STATE.0.get();
+        if plate == 0 {
+            s.plus.as_ptr() as u32
+        } else {
+            s.minus.as_ptr() as u32
+        }
+    }
+}
+
 fn decode_pair(s: &mut State) -> Result<(), ()> {
     let plus_len = s.png_plus_len as usize;
     let minus_len = s.png_minus_len as usize;
-    let res_plus = decode_rgba16(
-        &s.png_plus[..plus_len],
-        &mut s.plus,
-        &mut s.raw,
-    )?;
-    let res_minus = decode_rgba16(
-        &s.png_minus[..minus_len],
-        &mut s.minus,
-        &mut s.raw,
-    )?;
+    let plus = &s.png_plus[..plus_len];
+    let minus = &s.png_minus[..minus_len];
+    let (res_plus, res_minus) = if crate::exrio::is_exr(plus) && crate::exrio::is_exr(minus) {
+        // Decode one file at a time. `raw` is scratch and is not either image.
+        let res_plus = {
+            let file = s.png_plus.as_ptr();
+            let raw = s.raw.as_mut_ptr();
+            let dst = s.plus.as_mut_ptr();
+            unsafe {
+                crate::exrio::decode_rgba16(
+                    core::slice::from_raw_parts(file, plus_len),
+                    core::slice::from_raw_parts_mut(dst, s.plus.len()),
+                    core::slice::from_raw_parts_mut(raw, s.raw.len()),
+                    RANGE,
+                )?
+            }
+        };
+        let res_minus = {
+            let file = s.png_minus.as_ptr();
+            let raw = s.raw.as_mut_ptr();
+            let dst = s.minus.as_mut_ptr();
+            unsafe {
+                crate::exrio::decode_rgba16(
+                    core::slice::from_raw_parts(file, minus_len),
+                    core::slice::from_raw_parts_mut(dst, s.minus.len()),
+                    core::slice::from_raw_parts_mut(raw, s.raw.len()),
+                    RANGE,
+                )?
+            }
+        };
+        (res_plus, res_minus)
+    } else {
+        let res_plus = decode_rgba16(&s.png_plus[..plus_len], &mut s.plus, &mut s.raw)?;
+        let res_minus = decode_rgba16(&s.png_minus[..minus_len], &mut s.minus, &mut s.raw)?;
+        (res_plus, res_minus)
+    };
     if res_plus != res_minus || res_plus < 8 || res_plus > MAX_RES {
         return Err(());
     }
@@ -474,8 +605,70 @@ pub fn ingest_pngs(plus: &[u8], minus: &[u8]) -> u32 {
     finish_ingest(s)
 }
 
+/// One dropped file is a brush. The other plate is an empty mask of the same size.
+pub fn ingest_one(file: &[u8]) -> u32 {
+    if file.is_empty() || file.len() > PNG_MAX {
+        let s = state();
+        s.ready = 0;
+        s.header.status = 3;
+        return 3;
+    }
+    let s = state();
+    s.png_plus[..file.len()].copy_from_slice(file);
+    s.png_plus_len = file.len() as u32;
+    finish_single(s)
+}
+
+fn finish_single(s: &mut State) -> u32 {
+    let len = s.png_plus_len as usize;
+    let exr = crate::exrio::is_exr(&s.png_plus[..len]);
+    s.container = if exr { 1 } else { 0 };
+    if shape_from_png(&s.png_plus[..len]).is_none() {
+        s.shape = shape::SHAPE_COUNT;
+    }
+    let decoded = unsafe {
+        let file = core::slice::from_raw_parts(s.png_plus.as_ptr(), len);
+        let dst = core::slice::from_raw_parts_mut(s.plus.as_mut_ptr(), s.plus.len());
+        let raw = core::slice::from_raw_parts_mut(s.raw.as_mut_ptr(), s.raw.len());
+        if exr {
+            crate::exrio::decode_rgba16(file, dst, raw, RANGE)
+        } else {
+            decode_rgba16(file, dst, raw)
+        }
+    };
+    let res = match decoded {
+        Ok(res) if (8..=MAX_RES).contains(&res) => res,
+        _ => {
+            s.ready = 0;
+            s.header.status = 3;
+            return 3;
+        }
+    };
+    s.bake_res = res;
+    let neutral = enc(0.0);
+    for j in 0..res {
+        for i in 0..res {
+            write_texel(&mut s.minus, res, i, j, [neutral, neutral, neutral], 0);
+        }
+    }
+    let comment = pngio::comment_for(shape::SHAPE_COUNT, "empty", res, 0.0, "minus");
+    match encode_plate(s, 1, comment.as_str()) {
+        Ok(n) => s.png_minus_len = n,
+        Err(()) => {
+            s.header.status = 2;
+            return 2;
+        }
+    }
+    finish_ingest(s)
+}
+
 fn finish_ingest(s: &mut State) -> u32 {
-    if let Some(shape) = shape_from_png(&s.png_plus[..s.png_plus_len as usize]) {
+    let len = s.png_plus_len as usize;
+    let brush = find_subslice(&s.png_plus[..len], b"plate=brush").is_some();
+    let tagged = shape_from_png(&s.png_plus[..len]);
+    if brush {
+        s.shape = shape::SHAPE_COUNT;
+    } else if let Some(shape) = tagged {
         if shape < shape::SHAPE_COUNT {
             s.shape = shape;
         }
@@ -526,6 +719,25 @@ pub fn load_pngs_from_memory(p_ptr: u32, p_len: u32, m_ptr: u32, m_len: u32) -> 
         (*raw).png_minus_len = m_len;
     }
     finish_ingest(state())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn load_one_from_memory(ptr: u32, len: u32) -> u32 {
+    if len == 0 || len as usize > PNG_MAX {
+        let s = state();
+        s.ready = 0;
+        s.header.status = 3;
+        return 3;
+    }
+    unsafe {
+        let raw = STATE.0.get();
+        let dest = (*raw).png_plus.as_mut_ptr();
+        if ptr != dest as u32 {
+            core::ptr::copy_nonoverlapping(ptr as *const u8, dest, len as usize);
+        }
+        (*raw).png_plus_len = len;
+    }
+    finish_single(state())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -655,9 +867,11 @@ pub fn build_mesh(n: u32) -> u32 {
                 let img = if plate == 0 { &s.plus[..] } else { &s.minus[..] };
                 let position = if let Some(vector) = fetch(img, bake, u, v) {
                     let p = origin + vector;
-                    let err = residual(shape, p);
-                    if err > max_residual {
-                        max_residual = err;
+                    if shape < shape::SHAPE_COUNT {
+                        let err = residual(shape, p);
+                        if err > max_residual {
+                            max_residual = err;
+                        }
                     }
                     p
                 } else {

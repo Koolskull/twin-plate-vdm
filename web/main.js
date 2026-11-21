@@ -45,11 +45,32 @@ const SHAPES = [
 
 const BAKE_STOPS = [16, 24, 32, 48, 64, 96, 128, 256];
 
+const BRUSHES = [
+  {
+    id: 0,
+    name: "Horn",
+    blurb: "A horn leans as it rises. The map has to store sideways displacement, not just height.",
+  },
+  {
+    id: 1,
+    name: "Crater",
+    blurb: "A crater drops in the middle and lifts a rim. The vectors point down as well as up.",
+  },
+  {
+    id: 2,
+    name: "Ridge",
+    blurb: "A ridge overhangs one side. The lip is past the base, which a height map cannot do.",
+  },
+];
+
 const state = {
   shape: 0,
   lean: 0.35,
   bake: 128,
   mesh: 32,
+  container: 0,
+  kind: "formula",
+  brush: 0,
   solid: true,
   wire: true,
   plates: true,
@@ -167,22 +188,67 @@ function bindUI() {
     button.textContent = shape.name;
     button.dataset.id = String(shape.id);
     button.addEventListener("click", () => {
+      state.kind = "formula";
       state.shape = shape.id;
       markShapes();
       scheduleBake();
     });
     shapes.append(button);
   }
+  const brushes = $("brushes");
+  for (const brush of BRUSHES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = brush.name;
+    button.dataset.id = String(brush.id);
+    button.addEventListener("click", () => {
+      state.kind = "brush";
+      state.brush = brush.id;
+      markShapes();
+      scheduleBake();
+    });
+    brushes.append(button);
+  }
+  for (const button of $("formats").querySelectorAll("button")) {
+    button.addEventListener("click", () => {
+      state.container = Number(button.dataset.container);
+      if (state.kind === "file") state.kind = "formula";
+      markShapes();
+      scheduleBake();
+    });
+  }
+  $("file").addEventListener("change", () => {
+    if ($("file").files.length) {
+      loadFiles($("file").files).catch((error) => showFatal(error));
+    }
+  });
+  const drop = $("drop");
+  window.addEventListener("dragover", (event) => {
+    if (![...event.dataTransfer.types].includes("Files")) return;
+    event.preventDefault();
+    drop.classList.add("hot");
+  });
+  window.addEventListener("dragleave", () => drop.classList.remove("hot"));
+  window.addEventListener("drop", (event) => {
+    if (!event.dataTransfer.files.length) return;
+    event.preventDefault();
+    drop.classList.remove("hot");
+    loadFiles(event.dataTransfer.files).catch((error) => showFatal(error));
+  });
   markShapes();
 
   $("lean").addEventListener("input", () => {
     state.lean = Number($("lean").value);
     $("lean-val").textContent = state.lean.toFixed(2);
+    if (state.kind === "file") state.kind = "formula";
+    markShapes();
     scheduleBake();
   });
   $("bake").addEventListener("input", () => {
     state.bake = BAKE_STOPS[Number($("bake").value)];
     $("bake-val").textContent = `${state.bake}²`;
+    if (state.kind === "file") state.kind = "formula";
+    markShapes();
     scheduleBake();
   });
   $("mesh").addEventListener("input", () => {
@@ -209,11 +275,12 @@ function bindUI() {
       state[key] = $(id).checked;
     });
   }
-  $("dl-plus").addEventListener("click", () => download(wasm.pngPlus, "plate-plus.png"));
-  $("dl-minus").addEventListener("click", () => download(wasm.pngMinus, "plate-minus.png"));
+  $("dl-plus").addEventListener("click", () => download(wasm.pngPlus, $("name-plus").textContent));
+  $("dl-minus").addEventListener("click", () => download(wasm.pngMinus, $("name-minus").textContent));
   window.addEventListener("keydown", (event) => {
     const index = Number(event.key) - 1;
     if (index >= 0 && index < SHAPES.length && !event.metaKey && !event.ctrlKey) {
+      state.kind = "formula";
       state.shape = index;
       markShapes();
       scheduleBake();
@@ -227,9 +294,27 @@ function bindUI() {
 
 function markShapes() {
   for (const button of $("shapes").querySelectorAll("button")) {
-    button.setAttribute("aria-pressed", button.dataset.id === String(state.shape) ? "true" : "false");
+    const on = state.kind === "formula" && button.dataset.id === String(state.shape);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
   }
-  $("blurb").textContent = SHAPES[state.shape].blurb;
+  for (const button of $("brushes").querySelectorAll("button")) {
+    const on = state.kind === "brush" && button.dataset.id === String(state.brush);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  for (const button of $("formats").querySelectorAll("button")) {
+    const on = Number(button.dataset.container) === state.container;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (state.kind === "brush") {
+    $("blurb").textContent = "The formula solids are sitting this one out. A brush is a single upward plate.";
+    $("brush-blurb").textContent = BRUSHES[state.brush].blurb;
+  } else if (state.kind === "file") {
+    $("blurb").textContent = "This mesh was decoded from the files you dropped. Pick a shape or a brush to bake again.";
+    $("brush-blurb").textContent = "A dropped OpenEXR with no downward plate is read as a brush.";
+  } else {
+    $("blurb").textContent = SHAPES[state.shape].blurb;
+    $("brush-blurb").textContent = "One image, the sculpt-brush kind of vector displacement. The downward plate stays empty.";
+  }
 }
 
 let bakeTimer = 0;
@@ -251,11 +336,14 @@ function scheduleMesh() {
 
 async function rebake() {
   const token = ++state.token;
-  $("res-note").textContent = "Casting rays into the two plates…";
+  $("res-note").textContent = state.kind === "brush" ? "Writing the brush into one plate…" : "Casting rays into the two plates…";
   await new Promise((resolve) => setTimeout(resolve, 16));
   if (token !== state.token) return;
 
-  const bakeStatus = wasm.exports.bake(state.shape, state.bake, state.lean);
+  wasm.exports.set_container(state.container);
+  const bakeStatus = state.kind === "brush"
+    ? wasm.exports.bake_brush(state.brush, state.bake)
+    : wasm.exports.bake(state.shape, state.bake, state.lean);
   wasm.memory = wasm.exports.memory;
   if (bakeStatus !== 0) {
     throw new Error(`Bake failed with status ${bakeStatus}.`);
@@ -276,13 +364,75 @@ async function rebake() {
   );
   wasm.memory = wasm.exports.memory;
   if (loadStatus !== 0) {
-    throw new Error(`PNG decode failed with status ${loadStatus}.`);
+    throw new Error(`Decode failed with status ${loadStatus}.`);
   }
   wasm.pngPlus = pngPlus;
   wasm.pngMinus = pngMinus;
   wasm.header = readHeader();
   showPngs(token);
   await rebuildMesh();
+}
+
+async function loadFiles(fileList) {
+  const files = [...fileList].slice(0, 2);
+  if (!files.length) return;
+  const blobs = await Promise.all(files.map(async (file) => ({
+    name: file.name.toLowerCase(),
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  })));
+  if (blobs.some((file) => file.bytes.length > 1_250_000)) {
+    throw new Error("That file is over 1.2 MB. Plates here stop at 256².");
+  }
+  if (blobs.some((file) => !isPlate(file.bytes))) {
+    throw new Error("Those need to be OpenEXR or 16-bit PNG plates.");
+  }
+  const token = ++state.token;
+  wasm.exports.wipe();
+  wasm.memory = wasm.exports.memory;
+  const fresh = readHeader();
+  const mem = new Uint8Array(wasm.memory.buffer);
+  let status;
+  if (blobs.length === 1) {
+    mem.set(blobs[0].bytes, fresh.pngPlusPtr);
+    status = wasm.exports.load_brush(fresh.pngPlusPtr, blobs[0].bytes.length);
+  } else {
+    let plus = blobs[0];
+    let minus = blobs[1];
+    const plusName = (file) => file.name.includes("plus") || file.name.includes("horn") || file.name.includes("crater") || file.name.includes("ridge");
+    if (minus.name.includes("plus") && !plus.name.includes("plus")) [plus, minus] = [minus, plus];
+    if (plus.name.includes("minus")) [plus, minus] = [minus, plus];
+    if (!plusName(plus) && plusName(minus)) [plus, minus] = [minus, plus];
+    mem.set(plus.bytes, fresh.pngPlusPtr);
+    mem.set(minus.bytes, fresh.pngMinusPtr);
+    status = wasm.exports.load_pngs(
+      fresh.pngPlusPtr,
+      plus.bytes.length,
+      fresh.pngMinusPtr,
+      minus.bytes.length,
+    );
+  }
+  wasm.memory = wasm.exports.memory;
+  if (status !== 0) {
+    throw new Error(`Could not read that file (status ${status}). ZIP, ZIPS, RLE, and uncompressed scanlines are fine. Tiled EXR is not.`);
+  }
+  if (token !== state.token) return;
+  state.kind = "file";
+  wasm.header = readHeader();
+  wasm.pngPlus = copyRange(wasm.header.pngPlusPtr, wasm.header.pngPlusLen);
+  wasm.pngMinus = copyRange(wasm.header.pngMinusPtr, wasm.header.pngMinusLen);
+  state.container = fileExt(wasm.pngPlus) === "exr" ? 1 : 0;
+  markShapes();
+  showPngs(token);
+  await rebuildMesh();
+}
+
+function isPlate(bytes) {
+  if (bytes.length >= 4 && bytes[0] === 0x76 && bytes[1] === 0x2f && bytes[2] === 0x31 && bytes[3] === 0x01) return true;
+  return bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+}
+
+function fileExt(bytes) {
+  return bytes && bytes[0] === 0x76 && bytes[1] === 0x2f ? "exr" : "png";
 }
 
 async function rebuildMesh() {
@@ -297,38 +447,57 @@ async function rebuildMesh() {
 }
 
 function showPngs(token) {
-  for (const url of wasm.urls) URL.revokeObjectURL(url);
-  wasm.urls = [];
-  const plusUrl = URL.createObjectURL(new Blob([wasm.pngPlus], { type: "image/png" }));
-  const minusUrl = URL.createObjectURL(new Blob([wasm.pngMinus], { type: "image/png" }));
-  wasm.urls.push(plusUrl, minusUrl);
-  const plus = $("img-plus");
-  const minus = $("img-minus");
-  plus.onload = () => {
-    if (token === state.token) uploadPlateTexture(0, plus);
-  };
-  minus.onload = () => {
-    if (token === state.token) uploadPlateTexture(1, minus);
-  };
-  plus.src = plusUrl;
-  minus.src = minusUrl;
+  paintPlate($("plate-plus"), 0);
+  paintPlate($("plate-minus"), 1);
+  if (token === state.token) {
+    uploadPlateTexture(0, $("plate-plus"));
+    uploadPlateTexture(1, $("plate-minus"));
+  }
+  const ext = fileExt(wasm.pngPlus);
   const h = wasm.header;
+  const brush = h.validMinus === 0;
+  $("name-plus").textContent = brush ? `brush.${ext}` : `plate-plus.${ext}`;
+  $("name-minus").textContent = brush ? `empty.${ext}` : `plate-minus.${ext}`;
   $("cap-plus").textContent = `${h.bakeRes}² · ${formatBytes(wasm.pngPlus.length)} · ${h.validPlus.toLocaleString()} hits`;
   $("cap-minus").textContent = `${h.bakeRes}² · ${formatBytes(wasm.pngMinus.length)} · ${h.validMinus.toLocaleString()} hits`;
+}
+
+function paintPlate(canvas, plate) {
+  const h = wasm.header;
+  const res = h.bakeRes;
+  if (!res) return;
+  const ptr = wasm.exports.plate_ptr(plate) >>> 0;
+  const texels = new Uint16Array(wasm.memory.buffer, ptr, res * res * 4);
+  canvas.width = res;
+  canvas.height = res;
+  const ctx = canvas.getContext("2d");
+  const image = ctx.createImageData(res, res);
+  const dst = image.data;
+  for (let i = 0; i < res * res; i++) {
+    const o = i * 4;
+    dst[o] = texels[o] >> 8;
+    dst[o + 1] = texels[o + 1] >> 8;
+    dst[o + 2] = texels[o + 2] >> 8;
+    dst[o + 3] = texels[o + 3] >= 32768 ? 255 : 0;
+  }
+  ctx.putImageData(image, 0, 0);
 }
 
 function renderStats() {
   const h = wasm.header;
   const pair = wasm.pngPlus.length + wasm.pngMinus.length;
-  const relation =
-    state.mesh === h.bakeRes
-      ? "This grid matches the PNG, so each vertex is one texel."
+  const fileWord = fileExt(wasm.pngPlus) === "exr" ? "OpenEXR" : "PNG";
+  const relation = state.kind === "brush" || h.validMinus === 0
+    ? "One plate. Misses stay off the mesh, and the downward file is an empty mask."
+    : state.mesh === h.bakeRes
+      ? `This grid matches the ${fileWord}, so each vertex is one texel.`
       : state.mesh < h.bakeRes
         ? "This grid samples fewer texels from the same files."
-        : "This grid is finer than the PNG, so it interpolates. Detail still lives in the files.";
+        : `This grid is finer than the ${fileWord}, so it interpolates. Detail still lives in the files.`;
   $("res-note").textContent = relation;
-  $("lean-note").textContent =
-    state.lean === 0
+  $("lean-note").textContent = state.kind === "brush"
+    ? "Lean is part of the brush, not a separate ray splay. The horn and the ridge already lean sideways."
+    : state.lean === 0
       ? "Lean is zero, so each vector runs straight out from the center and the color is mostly green."
       : "Lean splays both rays outward. Red and blue wake up, and the shell reaches around the sides.";
   const rows = [
@@ -373,7 +542,9 @@ function formatBytes(n) {
 
 function download(bytes, name) {
   if (!bytes) return;
-  const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  const ext = fileExt(bytes);
+  const type = ext === "exr" ? "image/x-exr" : "image/png";
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
   const link = document.createElement("a");
   link.href = url;
   link.download = name;
@@ -510,7 +681,7 @@ function initGl() {
   const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
   if (!gl) {
     $("gl-note").hidden = false;
-    $("gl-note").textContent = "WebGL2 is unavailable. The PNG pair below is still the model.";
+    $("gl-note").textContent = "WebGL2 is unavailable. The plates below are still the model.";
     return false;
   }
   glState.gl = gl;
@@ -885,11 +1056,32 @@ async function runSelfTest() {
   await rebake();
   const stemY = wasm.header.plateY + wasm.header.centerMinus[1];
   if (stemY > -0.4) fail(`mushroom stem ${stemY}`);
+  state.container = 1;
+  state.kind = "formula";
+  state.shape = 0;
+  state.bake = 32;
+  state.mesh = 24;
+  markShapes();
+  await rebake();
+  if (wasm.pngPlus[0] !== 0x76 || wasm.pngPlus[1] !== 0x2f || wasm.pngPlus[2] !== 0x31) fail("exr magic");
+  if (wasm.header.centerPlus[1] <= 0) fail("exr sphere");
+  state.kind = "brush";
+  state.brush = 0;
+  state.bake = 32;
+  markShapes();
+  await rebake();
+  if (wasm.header.validMinus !== 0) fail("brush should have an empty downward plate");
+  if (wasm.header.centerPlus[1] < 0.8) fail(`horn ${wasm.header.centerPlus[1]}`);
+  if (wasm.header.triCount < 4) fail("horn mesh");
+  state.container = 0;
+  state.kind = "formula";
   if (!glState.gl) fail("webgl missing");
   const result = notes.length ? `fail ${notes.join("; ")}` : "pass";
   document.documentElement.dataset.twin = result;
   $("selftest").textContent = result;
   state.shape = 0;
+  state.kind = "formula";
+  state.container = 0;
   state.lean = 0.35;
   state.bake = 128;
   state.mesh = 32;

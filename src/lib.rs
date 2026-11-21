@@ -13,6 +13,8 @@
 #![cfg_attr(target_arch = "wasm32", no_std)]
 #![cfg_attr(not(test), allow(dead_code))]
 
+mod brush;
+mod exrio;
 mod fmath;
 mod geom;
 mod math;
@@ -53,6 +55,30 @@ pub extern "C" fn load_pngs(plus_ptr: u32, plus_len: u32, minus_ptr: u32, minus_
 #[no_mangle]
 pub extern "C" fn header_ptr() -> u32 {
     geom::header_address()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn set_container(kind: u32) {
+    geom::set_container(kind);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn bake_brush(id: u32, res: u32) -> u32 {
+    geom::bake_brush(id, res)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn plate_ptr(plate: u32) -> u32 {
+    geom::plate_address(plate)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn load_brush(ptr: u32, len: u32) -> u32 {
+    geom::load_one_from_memory(ptr, len)
 }
 
 #[cfg(test)]
@@ -300,6 +326,88 @@ mod tests {
             good as f32 / total as f32 > 0.95,
             "{good}/{total}"
         );
+    }
+
+    #[test]
+    fn exr_pair_and_brush_roundtrip() {
+        geom::set_container(1);
+        assert_eq!(bake_model(shape::SPHERE, 16, 0.2), 0);
+        assert_eq!(&png_plus()[..4], &[0x76, 0x2f, 0x31, 0x01]);
+        assert!(png_plus().windows(14).any(|w| w == b"twin-plate-vdm"));
+        let plus = png_plus().to_vec();
+        let minus = png_minus().to_vec();
+        let hits = header().valid_plus;
+        wipe_images();
+        assert_eq!(ingest_pngs(&plus, &minus), 0);
+        assert_eq!(header().valid_plus, hits);
+        assert_eq!(header().shape, shape::SPHERE);
+        assert_eq!(build_mesh(16), 0);
+        assert!(header().tri_count > 10);
+        assert!(header().surface_error < 5e-3, "{}", header().surface_error);
+
+        assert_eq!(geom::bake_brush(0, 32), 0);
+        let horn = header();
+        assert_eq!(&png_plus()[..4], &[0x76, 0x2f, 0x31, 0x01]);
+        assert!(horn.valid_plus > 20);
+        assert_eq!(horn.valid_minus, 0);
+        assert!(horn.center_plus_ok == 1 && horn.center_plus[1] > 0.8, "{:?}", horn.center_plus);
+        assert_eq!(build_mesh(24), 0);
+        assert!(header().tri_count > 0);
+        assert_eq!(header().shape, shape::SHAPE_COUNT);
+        let one = png_plus().to_vec();
+        wipe_images();
+        assert_eq!(geom::ingest_one(&one), 0);
+        assert!(header().valid_plus > 20);
+        assert_eq!(header().valid_minus, 0);
+        assert_eq!(header().shape, shape::SHAPE_COUNT);
+        assert!(header().center_plus[1] > 0.8);
+
+        assert_eq!(geom::bake_brush(1, 24), 0);
+        assert!(header().center_plus[1] < -0.3, "crater {:?}", header().center_plus);
+        assert_eq!(geom::bake_brush(2, 24), 0);
+        assert!(header().center_plus[0] > 0.2, "ridge {:?}", header().center_plus);
+        assert!(header().center_plus[1] > 0.2, "ridge {:?}", header().center_plus);
+
+        geom::set_container(0);
+        assert_eq!(bake_model(shape::SPHERE, 16, 0.0), 0);
+        assert_eq!(&png_plus()[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    #[ignore]
+    fn export_example_exrs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        std::fs::create_dir_all(&root).unwrap();
+        geom::set_container(1);
+        for (id, name) in [(0u32, "horn"), (1, "crater"), (2, "ridge")] {
+            assert_eq!(geom::bake_brush(id, 96), 0, "{name}");
+            std::fs::write(root.join(format!("{name}.exr")), png_plus()).unwrap();
+        }
+        assert_eq!(bake_model(shape::SPHERE, 48, 0.35), 0);
+        std::fs::write(root.join("sphere-plus.exr"), png_plus()).unwrap();
+        std::fs::write(root.join("sphere-minus.exr"), png_minus()).unwrap();
+        if let Ok(bytes) = std::fs::read("/tmp/Blobbies.exr") {
+            let mut scratch = vec![0u8; 600_000];
+            let mut pixels = vec![0f32; 32 * 32 * 4];
+            for y in 0..32i32 {
+                for x in 0..32i32 {
+                    let px = crate::exrio::sample_rgba(&bytes, &mut scratch, 484 + x, 484 + y).unwrap();
+                    let o = ((y as usize) * 32 + x as usize) * 4;
+                    pixels[o..o + 4].copy_from_slice(&px);
+                }
+            }
+            let mut out = vec![0u8; 80_000];
+            let n = crate::exrio::encode_rgba_f32(
+                &pixels,
+                32,
+                "ILM Blobbies 32 crop around data-window 500,500. RGB stored as XYZ. Not a sculpt brush.",
+                &mut scratch,
+                &mut out,
+            )
+            .unwrap();
+            std::fs::write(root.join("blobbies-center.exr"), &out[..n]).unwrap();
+        }
+        geom::set_container(0);
     }
 
     fn pos(verts: &[f32], id: u32) -> Vec3 {
