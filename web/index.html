@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Twin plate VDM</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <p class="kicker">Twin plate vector displacement</p>
+    <h1>Two PNGs are the model.</h1>
+    <p class="lede">
+      A solid can be stored as a pair of images. Both plates sit on the same
+      center. One faces up, the other faces down, and each pixel is the vector
+      from that center out to the surface. A mesh of any size is a resample of
+      those two files.
+    </p>
+  </header>
+
+  <main class="stage">
+    <section class="view" aria-label="Viewport">
+      <canvas id="view"></canvas>
+      <div class="hud">
+        <span><i class="swatch plus"></i> plate +</span>
+        <span><i class="swatch minus"></i> plate −</span>
+        <span><i class="swatch clay"></i> resampled mesh</span>
+      </div>
+      <p id="gl-note" class="gl-note" hidden></p>
+    </section>
+
+    <aside>
+      <fieldset>
+        <legend>Shape, from a formula</legend>
+        <div class="shapes" id="shapes"></div>
+        <p id="blurb" class="blurb"></p>
+      </fieldset>
+
+      <label class="slider">
+        <span>Lean <b id="lean-val">0.35</b></span>
+        <input id="lean" type="range" min="0" max="1.2" step="0.01" value="0.35">
+      </label>
+      <p id="lean-note" class="note"></p>
+
+      <label class="slider">
+        <span>PNG resolution <b id="bake-val">128²</b></span>
+        <input id="bake" type="range" min="0" max="7" step="1" value="5">
+      </label>
+
+      <label class="slider">
+        <span>Mesh resolution <b id="mesh-val">32²</b></span>
+        <input id="mesh" type="range" min="8" max="256" step="1" value="32">
+      </label>
+      <p id="res-note" class="note"></p>
+
+      <div class="presets">
+        <button type="button" data-mesh="12">Draft 12²</button>
+        <button type="button" data-mesh="48">Game 48²</button>
+        <button type="button" data-mesh="160">Hero 160²</button>
+      </div>
+
+      <div class="toggles">
+        <label><input id="show-solid" type="checkbox" checked> Solid</label>
+        <label><input id="show-wire" type="checkbox" checked> Wire</label>
+        <label><input id="show-plates" type="checkbox" checked> Plates</label>
+        <label><input id="show-vectors" type="checkbox" checked> Vectors</label>
+        <label><input id="spin" type="checkbox" checked> Spin</label>
+      </div>
+
+      <dl class="stats" id="stats"></dl>
+      <p id="vectors" class="vectors"></p>
+    </aside>
+  </main>
+
+  <section class="steps">
+    <article>
+      <h2>1 · Formula</h2>
+      <p>The solid is math: a sphere, a box, a torus, a cone, a capsule, a mushroom, a rippled ball. Nothing is loaded from a modeling tool.</p>
+    </article>
+    <article>
+      <h2>2 · Outward rays</h2>
+      <p>Both plates occupy the same center. The upper face fires up. The lower face fires down. Lean splays both rays away from the middle, so the stored vector picks up X and Z.</p>
+    </article>
+    <article>
+      <h2>3 · Two files</h2>
+      <p>Hit minus plate point is the vector. Red, green, and blue store X, Y, and Z in 16-bit PNG. Alpha is zero where the ray misses. That pair is the model.</p>
+    </article>
+    <article>
+      <h2>4 · Any grid</h2>
+      <p>Reconstruction decodes the PNGs, adds the vectors back onto the plates, and stitches a wall around the silhouette. A coarser grid is a lighter mesh from the same files.</p>
+    </article>
+  </section>
+
+  <section class="files">
+    <figure>
+      <img id="img-plus" alt="Top plate vector image">
+      <figcaption>
+        <strong>plate-plus.png</strong>
+        <span id="cap-plus"></span>
+        <button type="button" id="dl-plus">Download</button>
+      </figcaption>
+    </figure>
+    <figure>
+      <img id="img-minus" alt="Bottom plate vector image">
+      <figcaption>
+        <strong>plate-minus.png</strong>
+        <span id="cap-minus"></span>
+        <button type="button" id="dl-minus">Download</button>
+      </figcaption>
+    </figure>
+  </section>
+
+  <footer>
+    <p class="formula">
+      <code>P(u,v) = O(u,v) + (channel / 65535 − ½) × 5</code>
+    </p>
+    <p>
+      The two PNGs are the geometry source. A build for a console or a phone can
+      resample them at that machine’s vertex budget, then paint albedo and normals
+      in an external tool. Texture size stays independent of this mesh.
+      These files are standard 16-bit RGBA PNGs with stored pixels, so other apps can open them.
+      Drag to orbit, scroll to zoom.
+    </p>
+    <p id="selftest" hidden></p>
+    <p id="fatal" class="fatal" hidden></p>
+  </footer>
+  <script src="twin_plate_vdm.wasm.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[package]
+name = "twin_plate_vdm"
+version = "0.1.0"
+edition = "2021"
+description = "Twin-plate vector displacement maps: two PNGs encode a solid, any grid rebuilds the mesh."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
