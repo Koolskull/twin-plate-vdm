@@ -520,18 +520,18 @@ function renderStats() {
     }),
   );
   $("vectors").textContent = [
-    vectorLine("plate +", h.centerPlus, h.centerPlusOk, "out, up"),
-    vectorLine("plate −", h.centerMinus, h.centerMinusOk, "out, down"),
+    vectorLine("plate +", h.centerPlus, h.centerPlusOk),
+    vectorLine("plate −", h.centerMinus, h.centerMinusOk),
     h.centerPlusOk && h.centerMinusOk
       ? "Center texels point away from each other, out from the shared plate."
       : "A miss here is an empty texel, as in the torus hole.",
   ].join("\n");
 }
 
-function vectorLine(label, vector, ok, direction) {
+function vectorLine(label, vector, ok) {
   if (!ok) return `${label}  miss`;
   const [x, y, z] = vector.map((n) => (n >= 0 ? "+" : "") + n.toFixed(3));
-  return `${label}  (${x}, ${y}, ${z})  ${direction}`;
+  return `${label}  (${x}, ${y}, ${z})  out, ${y >= 0 ? "up" : "down"}`;
 }
 
 function formatBytes(n) {
